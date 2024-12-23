@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+#
+# This file is part of the Robotic Observatory Control Kit (rockit)
+#
+# rockit is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# rockit is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with rockit.  If not, see <http://www.gnu.org/licenses/>.
+
+"""Commandline client for controlling a multi-channel focus controller"""
+
+import glob
+import os
+import sys
+import Pyro4
+from rockit.common import print
+from rockit.focuser.klipper import Config, CommandStatus, FocuserStatus
+from rockit.klippermcu import StepperStatus
+
+
+SCRIPT_NAME = os.path.basename(sys.argv[0])
+sys.excepthook = Pyro4.util.excepthook
+
+
+def run_command(command, args):
+    """Runs a daemon command, handling error messages"""
+    if 'FOCUSD_CONFIG_PATH' in os.environ:
+        config = Config(os.environ['FOCUSD_CONFIG_PATH'])
+    else:
+        # Load the config file defined in the FOCUSD_CONFIG_PATH environment variable or from the
+        # default system location (/etc/focusd/). Exit with an error if zero or multiple are found.
+        files = glob.glob("/etc/focusd/*.json")
+        if len(files) != 1:
+            print('error: failed to guess the default config file. ' +
+                  'Run as FOCUSD_CONFIG_PATH=/path/to/config.json focus <command>')
+            return 1
+
+        config = Config(files[0])
+
+    try:
+        ret = command(config, args)
+    except Pyro4.errors.CommunicationError:
+        ret = -101
+
+    # Print message associated with error codes, except for -1 (error handled locally)
+    if ret not in [-1, 0]:
+        print(CommandStatus.message(ret))
+    sys.exit(ret)
+
+
+def print_status(config, _):
+    """Prints a human-readable summary of the focuser status"""
+    with config.daemon.connect() as focusd:
+        data = focusd.report_status()
+        temperature_labels = focusd.temperature_labels()
+
+    label = f'Focuser is {FocuserStatus.label(data["status"], True)}'
+    print(label)
+    if 'channels' in data:
+        print('Channels:')
+        for channel_id, channel in data['channels'].items():
+            label = f'   [b]{channel_id}[/b]: ' + StepperStatus.label(channel['status'], True)
+            if channel['status'] >= StepperStatus.Idle:
+                label += f' ([b]{channel["pos"]:.2f} mm'
+                if channel['status'] == StepperStatus.Moving:
+                    label += f' moving to {channel["set_pos"]:.2f} mm'
+                label += '[/b])'
+            print(label)
+
+    if 'temperature' in data and len(data['temperature']):
+        print('Temperature Probes:')
+        max_label_length = max([len(label) for label in temperature_labels.values()])
+        for key, label in temperature_labels.items():
+            padding = ''.join([' '] * (max_label_length + 3 - len(label)))
+            value = data['temperature'][key]
+            if value is not None:
+                print(padding + f'{label}: [b]{round(value, 1)}[/b] \u00B0C')
+            else:
+                print(padding + f'{label}: [b]UNKNOWN[/b]')
+    return 0
+
+
+def set_position(config, args):
+    """Request a focuser channel to move a specific position"""
+    if len(args) == 2:
+        channel = args[0]
+        position = float(args[1])
+        try:
+            with config.daemon.connect(timeout=config.move_timeout) as focusd:
+                return focusd.set_channel(channel, position)
+        except KeyboardInterrupt:
+            # ctrl-c terminates the running command
+            with config.daemon.connect() as focusd:
+                return focusd.stop(channel)
+    print(f'usage: {SCRIPT_NAME} set <channel> <position>')
+    return -1
+
+
+def stop(config, args):
+    """Stop a focuser channel"""
+    if len(args) == 1:
+        with config.daemon.connect() as focusd:
+            return focusd.stop(args[0])
+    print(f'usage: {SCRIPT_NAME} stop <channel>')
+    return -1
+
+
+def initialize(config, *_):
+    """Connect to the focus controller"""
+    with config.daemon.connect(timeout=config.connect_timeout) as focusd:
+        return focusd.initialize()
+
+
+def home(config, *_):
+    """Home focus channels that have end stops"""
+    try:
+        with config.daemon.connect(timeout=config.home_timeout + config.move_timeout) as focusd:
+            return focusd.home()
+    except KeyboardInterrupt:
+        # ctrl-c terminates the running command
+        with config.daemon.connect() as focusd:
+            return focusd.stop()
+
+
+def shutdown(config, *_):
+    """Disconnect from the focus controller"""
+    with config.daemon.connect() as focusd:
+        return focusd.shutdown()
+
+
+def print_usage():
+    """Prints the utility help"""
+    print(f'usage: {SCRIPT_NAME} <command> [<args>]')
+    print()
+    print('general commands:')
+    print('   set          request a focuser channel to move to a given absolute position')
+    print('   status       print a human-readable summary of the focuser status')
+    print('engineering commands:')
+    print('   init         connect to the focus controller')
+    print('   home         home the focuser channels that have end stops')
+    print('   kill         disconnect from the focus controller')
+    print()
+
+    return 0
+
+
+if __name__ == '__main__':
+    commands = {
+        'set': set_position,
+        'stop': stop,
+        'status': print_status,
+        'init': initialize,
+        'home': home,
+        'kill': shutdown
+    }
+
+    if len(sys.argv) >= 2 and sys.argv[1] in commands:
+        sys.exit(run_command(commands[sys.argv[1]], sys.argv[2:]))
+
+    sys.exit(print_usage())

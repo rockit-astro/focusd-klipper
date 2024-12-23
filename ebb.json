@@ -1,0 +1,50 @@
+{
+  "daemon": "localhost_test",
+  "log_name": "focusd@portable",
+  "control_machines": ["LocalHost"],
+  "state_path": "/var/tmp/focuser-ebb.json",
+  "serial_port": "/dev/serial/by-id/usb-Klipper_stm32g0b1xx_340008000B50425539393020-if00",
+  "serial_baud": 250000,
+  "connect_timeout": 10,
+  "home_timeout": 30,
+  "move_timeout": 30,
+  "interfaces": {
+    "ds2484": {
+      "type": "DS2484",
+      "i2c_bus": "i2c3_PB3_PB4"
+    },
+    "tmc_uart": {
+      "type": "tmc2209",
+      "uart_pin": "PA15"
+    }
+  },
+  "probes": {
+    "1": {
+      "label": "Bridge",
+      "cadence": 5,
+      "type": "DS18B20",
+      "interface": "ds2484"
+    }
+  },
+  "steppers": {
+    "1": {
+      "step_pin": "PD0",
+      "dir_pin": "!PD1",
+      "enable_pin": "!PD2",
+      "endstop_pin": "^PC15",
+      "rotation_microsteps": 3200,
+      "rotation_distance": 1,
+      "position_min": 0,
+      "position_max": 50,
+      "speed": 2.5,
+      "acceleration": 0.5,
+      "homing_backoff": 1,
+      "tracking_cadence": 0.1,
+      "tracking_commit_buffer": 0.25,
+      "interface": "tmc_uart",
+      "uart_address": 0,
+      "uart_microsteps": 16,
+      "uart_run_current": 0.65
+    }
+  }
+}

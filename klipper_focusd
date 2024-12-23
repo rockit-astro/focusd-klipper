@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+#
+# This file is part of the Robotic Observatory Control Kit (rockit)
+#
+# rockit is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# rockit is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with rockit.  If not, see <http://www.gnu.org/licenses/>.
+
+"""Daemon for controlling a multi-channel focus controller via klipper and Pyro"""
+import argparse
+from datetime import datetime
+import json
+import threading
+import traceback
+import sys
+import Pyro4
+from rockit.common import log, TryLock
+from rockit.common.helpers import pyro_client_matches
+from rockit.klippermcu import DS2484, MCU, OutputPin, Stepper, StepperStatus, TMCUART
+from rockit.klippermcu import DS18B20Probe, RP2040Probe, ThermistorProbe
+from rockit.focuser.klipper import CommandStatus, Config, FocuserStatus
+
+class Channel:
+    def __init__(self, mcu, interfaces, config):
+        interface = config.pop('interface', None)
+        if interface is not None:
+            uart = interfaces[interface]
+        else:
+            uart = None
+            config['uart_address'] = 0
+            config['uart_microsteps'] = 0
+            config['uart_run_current'] = 0
+
+        if 'endstop_pin' not in config:
+            config['endstop_pin'] = None
+
+        self.stepper = Stepper(mcu, uart, **config)
+        self.command_lock = threading.Lock()
+        self.set_pos = 0
+
+class FocuserDaemon:
+    """Daemon interface for multi-channel focuser"""
+    def __init__(self, config):
+        self._config = config
+        self._command_lock = threading.Lock()
+        self._mcu = MCU(config.serial_port, config.serial_baud)
+        self._temperatures = {}
+        self._channels = {}
+        self._is_homing = False
+
+        interfaces = {}
+        for k, v in config.interfaces.items():
+            if v['type'] == 'tmc2209':
+                interfaces[k] = TMCUART(self._mcu, v['type'], v.get('tx_pin', v['uart_pin']), v['uart_pin'])
+            elif v['type'] == 'DS2484':
+                interfaces[k] = DS2484(self._mcu, v['i2c_bus'])
+
+        for k, v in config.probes.items():
+            if v['type'] == '3950NTC':
+                # Steinhart - Hart coefficents
+                coeffs = [0.7934721511e-3, 2.007632503e-4, 1.632834118e-7]
+                self._temperatures[k] = ThermistorProbe(self._mcu, coeffs, v['pin'], v['cadence'])
+            elif v['type'] == 'DS18B20':
+                ds2484 = interfaces[v['interface']]
+                self._temperatures[k] = DS18B20Probe(self._mcu, ds2484, v.get('address', None), v['cadence'])
+            elif v['type'] == 'RP2040':
+                self._temperatures[k] = RP2040Probe(self._mcu, v['cadence'])
+
+        for k, v in config.steppers.items():
+            self._channels[k] = Channel(self._mcu, interfaces, v)
+
+        try:
+            with open(config.state_path, 'r', encoding='utf-8') as infile:
+                data = json.load(infile)
+                for k, v in data.items():
+                    channel = self._channels.get(k, None)
+                    if channel is not None:
+                        channel.set_pos = v
+        except Exception:
+            pass
+
+        self._controller_fan = None
+        if config.controller_fan:
+            self._controller_fan = OutputPin(self._mcu, config.controller_fan['pin'])
+            threading.Thread(target=self._fan_thread).start()
+
+    def _fan_thread(self):
+        cond = threading.Condition()
+        active_states = [StepperStatus.Moving, StepperStatus.Homing, StepperStatus.Tracking]
+        disable_time = self._mcu.host_clock()
+        idle_timeout = self._config.controller_fan['idle_timeout']
+        enabled = False
+
+        while True:
+            stepper_active = any(c.stepper.status in active_states for c in self._channels.values())
+            if stepper_active:
+                disable_time = self._mcu.host_clock() + idle_timeout
+
+            next_enabled = self._mcu.host_clock() < disable_time
+            if next_enabled != enabled:
+                self._controller_fan.set(next_enabled)
+                enabled = next_enabled
+
+            with cond:
+                cond.wait(1)
+
+    @Pyro4.expose
+    def report_status(self):
+        """Returns a dictionary containing the current focuser state"""
+        s = FocuserStatus.Disconnected
+        if self._mcu.connected:
+            s = FocuserStatus.Initializing if self._is_homing else FocuserStatus.Connected
+
+        data = {
+            'date': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'status': s,
+            'status_label': FocuserStatus.label(s, formatting=False),
+        }
+
+        if s != FocuserStatus.Disconnected:
+            data['temperature'] = {}
+            for k, t in self._temperatures.items():
+                data['temperature'][k] = t.temperature
+
+            data['channels'] = {}
+            for k, c in self._channels.items():
+                status = c.stepper.status
+                data['channels'][k] = {
+                    'status': status,
+                    'status_label': StepperStatus.label(status, formatting=False),
+                    'pos': c.stepper.position,
+                    'set_pos': c.set_pos
+                }
+
+        return data
+
+    @Pyro4.expose
+    def temperature_labels(self):
+        """Query the labels associated with the temperature probes"""
+        return {k: v['label'] for k, v in self._config.probes.items()}
+
+    @Pyro4.expose
+    def initialize(self):
+        """Connects to the device"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if self._mcu.connected:
+                return CommandStatus.NotDisconnected
+
+            try:
+                if not self._mcu.initialize():
+                    return CommandStatus.Failed
+
+                for c in self._channels.values():
+                    if not c.stepper.has_endstop:
+                        # Assume that it hasn't moved from its last known position
+                        c.stepper.sync(c.set_pos)
+
+                log.info(self._config.log_name, 'Connected to controller')
+                return CommandStatus.Succeeded
+
+            except Exception:
+                print('error while initializing focuser')
+                traceback.print_exc(file=sys.stdout)
+                return CommandStatus.Failed
+
+    @Pyro4.expose
+    def home(self):
+        """Connects to the device"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if not self._mcu.connected:
+                return CommandStatus.NotConnected
+
+            self._is_homing = True
+            locks = []
+
+            try:
+                for c in self._channels.values():
+                    if c.stepper.has_endstop:
+                        if not c.command_lock.acquire(False):
+                            return CommandStatus.Blocked
+
+                        locks.append(c.command_lock)
+                        c.stepper.home(blocking=False)
+
+                def wait_until_complete(status, timeout):
+                    cond = threading.Condition()
+                    start = self._mcu.host_clock()
+                    while True:
+                        if self._mcu.host_clock() - start > timeout:
+                            return CommandStatus.Failed
+
+                        if all(c.stepper.status != status for c in self._channels.values()):
+                            break
+
+                        with cond:
+                            cond.wait(0.1)
+
+                wait_until_complete(StepperStatus.Homing, self._config.home_timeout)
+                if any(c.stepper.status == StepperStatus.NotHomed for c in self._channels.values()):
+                    return CommandStatus.Failed
+
+                # Move to the last position
+                for c in self._channels.values():
+                    if c.stepper.has_endstop:
+                        c.stepper.move(c.set_pos, blocking=False)
+
+                wait_until_complete(StepperStatus.Moving, self._config.move_timeout)
+
+                log.info(self._config.log_name, 'Homing complete')
+                return CommandStatus.Succeeded
+
+            except Exception:
+                print('error while homing focusers')
+                traceback.print_exc(file=sys.stdout)
+                return CommandStatus.Failed
+            finally:
+                for lock in locks:
+                    lock.release()
+                self._is_homing = False
+
+    @Pyro4.expose
+    def set_channel(self, channel, position, offset=False):
+        """Request a focuser channel to move a specific step position"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        if not self._mcu.connected:
+            return CommandStatus.NotConnected
+
+        c = self._channels.get(channel, None)
+        if c is None:
+            return CommandStatus.InvalidChannel
+
+        with TryLock(c.command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if c.stepper.status == StepperStatus.NotHomed:
+                return CommandStatus.ChannelNotHomed
+
+            if offset:
+                c.set_pos += position
+            else:
+                c.set_pos = position
+
+            try:
+                with open(self._config.state_path, 'w', encoding='utf-8') as outfile:
+                    json.dump({k: s.set_pos for k, s in self._channels.items()}, outfile)
+            except Exception:
+                pass
+
+            c.stepper.move(c.set_pos - c.stepper.position)
+            if abs(c.set_pos - c.stepper.position) > 0.001:
+                c.set_pos = c.stepper.position
+                return CommandStatus.Failed
+
+            return CommandStatus.Succeeded
+
+    @Pyro4.expose
+    def stop(self, channel=None):
+        """Stop any in progress movement"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        if not self._mcu.connected:
+            return CommandStatus.NotConnected
+
+        if channel is not None:
+            c = self._channels.get(channel, None)
+            if c is None:
+                return CommandStatus.InvalidChannel
+
+            c.stepper.stop()
+        else:
+            for c in self._channels.values():
+                c.stepper.stop()
+
+        return CommandStatus.Succeeded
+
+    @Pyro4.expose
+    def shutdown(self):
+        """Disconnects from the device"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if not self._mcu.connected:
+                return CommandStatus.NotConnected
+
+            try:
+                if not self._mcu.shutdown():
+                    return CommandStatus.Failed
+                log.info(self._config.log_name, 'Disconnected from controller')
+                return CommandStatus.Succeeded
+            except Exception:
+                print('error while shutting down focuser')
+                traceback.print_exc(file=sys.stdout)
+                return CommandStatus.Failed
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Focus Server')
+    parser.add_argument('config', help='Path to configuration json file')
+    args = parser.parse_args()
+    _config = Config(args.config)
+    _config.daemon.launch(FocuserDaemon(_config))

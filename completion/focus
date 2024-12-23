@@ -1,0 +1,20 @@
+_focus()
+{
+    compopt +o default
+    local cur prev opts
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    opts="set stop status init home kill"
+
+    case "${prev}" in
+        set|stop)
+            opts=$(focus list-channels)
+            ;;
+        *)
+            ;;
+    esac
+
+    COMPREPLY=($(compgen -W "${opts}" -- ${cur}))
+    return 0
+}

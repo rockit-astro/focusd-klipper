@@ -1,0 +1,27 @@
+{
+  "daemon": "localhost_test",
+  "log_name": "focusd@portable",
+  "control_machines": ["LocalHost"],
+  "state_path": "/var/tmp/focuser2.json",
+  "serial_port": "/dev/serial/by-id/usb-Klipper_atmega32u4_12345-if00",
+  "serial_baud": 250000,
+  "connect_timeout": 10,
+  "home_timeout": 30,
+  "move_timeout": 30,
+  "steppers": {
+    "0": {
+      "step_pin": "PB0",
+      "dir_pin": "PB2",
+      "enable_pin": "!PB1",
+      "rotation_microsteps": 3200,
+      "rotation_distance": 1,
+      "position_min": 0,
+      "position_max": 50,
+      "speed": 2.5,
+      "acceleration": 0.5,
+      "homing_backoff": 1,
+      "tracking_cadence": 0.1,
+      "tracking_commit_buffer": 0.25
+    }
+  }
+}
