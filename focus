@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+#
+# This file is part of the Robotic Observatory Control Kit (rockit)
+#
+# rockit is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# rockit is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with rockit.  If not, see <http://www.gnu.org/licenses/>.
+
+"""Commandline client for controlling a multi-channel focus controller"""
+
+import glob
+import os
+import sys
+import Pyro4
+from rockit.common import print
+from rockit.focuser.klipper import Config, CommandStatus, MCUStatus, StepperStatus
+
+
+SCRIPT_NAME = os.path.basename(sys.argv[0])
+sys.excepthook = Pyro4.util.excepthook
+
+
+def run_command(command, args):
+    """Runs a daemon command, handling error messages"""
+    if 'FOCUSD_CONFIG_PATH' in os.environ:
+        config = Config(os.environ['FOCUSD_CONFIG_PATH'])
+    else:
+        # Load the config file defined in the FOCUSD_CONFIG_PATH environment variable or from the
+        # default system location (/etc/focusd/). Exit with an error if zero or multiple are found.
+        files = glob.glob("/etc/focusd/*.json")
+        if len(files) != 1:
+            print('error: failed to guess the default config file. ' +
+                  'Run as FOCUSD_CONFIG_PATH=/path/to/config.json focus <command>')
+            return 1
+
+        config = Config(files[0])
+
+    try:
+        ret = command(config, args)
+    except Pyro4.errors.CommunicationError:
+        ret = -101
+
+    # Print message associated with error codes, except for -1 (error handled locally)
+    if ret not in [-1, 0]:
+        print(CommandStatus.message(ret))
+    sys.exit(ret)
+
+
+def print_status(config, _):
+    """Prints a human-readable summary of the focuser status"""
+    with config.daemon.connect() as focusd:
+        data = focusd.report_status()
+
+    label = f'Focuser is {MCUStatus.label(data["mcu"], True)}'
+    print(label)
+    if 'channels' in data:
+        print('Channels:')
+        for channel_id, channel in data['channels'].items():
+            label = f'   [b]{channel_id}[/b]: ' + StepperStatus.label(channel['status'], True)
+            if channel['status'] >= StepperStatus.Idle:
+                label += f' ([b]{channel["pos"]:.2f} mm'
+                if channel['status'] == StepperStatus.Moving:
+                    label += f' moving to {channel["set_pos"]:.2f} mm'
+                label += f'[/b])'
+            print(label)
+    return 0
+
+
+def set_position(config, args):
+    """Request a focuser channel to move a specific position"""
+    if len(args) == 2:
+        channel = args[0]
+        position = float(args[1])
+        try:
+            with config.daemon.connect(timeout=0) as focusd:
+                return focusd.set_channel(channel, position)
+        except KeyboardInterrupt:
+            # ctrl-c terminates the running command
+            with config.daemon.connect() as focusd:
+                return focusd.stop_channel(channel)
+    print(f'usage: {SCRIPT_NAME} set <channel> <position>')
+    return -1
+
+
+def stop(config, args):
+    """Stop a focuser channel"""
+    with config.daemon.connect() as focusd:
+        return focusd.stop_channel(args[0])
+
+
+def initialize(config, *_):
+    """Connect to the focuser"""
+    with config.daemon.connect() as focusd:
+        return focusd.initialize()
+
+
+def home(config, *_):
+    """Connect to the focuser"""
+    with config.daemon.connect() as focusd:
+        return focusd.home()
+
+
+def shutdown(config, *_):
+    """Disconnect from the focuser"""
+    with config.daemon.connect() as focusd:
+        return focusd.shutdown()
+
+
+def print_usage():
+    """Prints the utility help"""
+    print(f'usage: {SCRIPT_NAME} <command> [<args>]')
+    print()
+    print('general commands:')
+    print('   set          request the focuser to move to a given absolute position')
+    print('   status       print a human-readable summary of the focuser status')
+    print('engineering commands:')
+    print('   init         connect to the focuser')
+    print('   kill         disconnect from the focuser')
+    print()
+
+    return 0
+
+
+if __name__ == '__main__':
+    commands = {
+        'set': set_position,
+        'stop': stop,
+        'status': print_status,
+        'init': initialize,
+        'home': home,
+        'kill': shutdown
+    }
+
+    if len(sys.argv) >= 2 and sys.argv[1] in commands:
+        sys.exit(run_command(commands[sys.argv[1]], sys.argv[2:]))
+
+    sys.exit(print_usage())

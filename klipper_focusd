@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+#
+# This file is part of the Robotic Observatory Control Kit (rockit)
+#
+# rockit is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# rockit is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with rockit.  If not, see <http://www.gnu.org/licenses/>.
+
+"""Daemon for controlling a multi-channel focus controller via klipper and Pyro"""
+import argparse
+from datetime import datetime
+import threading
+import traceback
+import sys
+import Pyro4
+from rockit.common import log, TryLock
+from rockit.common.helpers import pyro_client_matches
+from rockit.focuser.klipper import CommandStatus, Config, MCUStatus, MCU, StepperStatus
+
+
+class FocuserDaemon:
+    """Daemon interface for multi-channel focuser"""
+    def __init__(self, config):
+        self._wait_condition = threading.Condition()
+        self._channel_state_changed_condition = threading.Condition()
+        self._config = config
+        self._command_lock = threading.Lock()
+        self._mcu = MCU(config.mcu)
+        self._target_positions = {s: 0 for s in self._mcu.steppers}
+
+    @Pyro4.expose
+    def report_status(self):
+        """Returns a dictionary containing the current focuser state"""
+        data = {
+            'date': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'mcu': self._mcu.status,
+            'mcu_label': MCUStatus.label(self._mcu.status, formatting=False),
+        }
+
+        if self._mcu.status == MCUStatus.Connected:
+            data['channels'] = {}
+            for name, s in self._mcu.steppers.items():
+                data['channels'][name] = {
+                    'status': s.status,
+                    'pos': s.position,
+                    'target_pos': self._target_positions[name]
+                }
+
+        return data
+
+    @Pyro4.expose
+    def initialize(self):
+        """Connects to the device"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if self._mcu.status == MCUStatus.Connected:
+                return CommandStatus.NotDisconnected
+
+            try:
+                self._mcu.initialize()
+                return CommandStatus.Succeeded
+            except Exception:
+                print('error while initializing focuser')
+                traceback.print_exc(file=sys.stdout)
+                return CommandStatus.Failed
+
+    @Pyro4.expose
+    def home(self):
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            try:
+                self._mcu.stepper_home(self._mcu.steppers)
+                return CommandStatus.Succeeded
+            except Exception:
+                print('error while homing focuser')
+                traceback.print_exc(file=sys.stdout)
+                return CommandStatus.Failed
+
+    @Pyro4.expose
+    def set_channel(self, channel, position, offset=False):
+        """Request a focuser channel to move a specific step position"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            stepper = self._mcu.steppers.get(channel, None)
+            if stepper is None:
+                return CommandStatus.InvalidChannel
+
+            if self._mcu.status == MCUStatus.Disconnected:
+                return CommandStatus.NotConnected
+
+            if stepper.status != StepperStatus.Idle:
+                return CommandStatus.ChannelNotReady
+
+            if offset:
+                self._target_positions[channel] += position
+            else:
+                self._target_positions[channel] = position
+
+            self._mcu.stepper_move(channel, self._target_positions[channel] - stepper.position)
+
+            return CommandStatus.Succeeded
+
+    @Pyro4.expose
+    def stop_channel(self, channel):
+        """Stop any in progress movement"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        stepper = self._mcu.steppers.get(channel, None)
+        if stepper is None:
+            return CommandStatus.InvalidChannel
+
+        if self._mcu.status == MCUStatus.Disconnected:
+            return CommandStatus.NotConnected
+
+        self._mcu.stepper_stop(channel)
+
+        return CommandStatus.Succeeded
+
+    @Pyro4.expose
+    def shutdown(self):
+        """Disconnects from the device"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if self._mcu.status == MCUStatus.Disconnected:
+                return CommandStatus.NotConnected
+
+            try:
+                self._mcu.shutdown()
+                log.info(self._config.log_name, 'Disconnected from controller')
+                return CommandStatus.Succeeded
+            except Exception:
+                print('error while shutting down focuser')
+                traceback.print_exc(file=sys.stdout)
+                return CommandStatus.Failed
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Focus Server')
+    parser.add_argument('config', help='Path to configuration json file')
+    args = parser.parse_args()
+    _config = Config(args.config)
+    _config.daemon.launch(FocuserDaemon(_config))
