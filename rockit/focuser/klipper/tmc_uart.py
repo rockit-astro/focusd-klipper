@@ -105,8 +105,6 @@ class TMCUART:
                 'SLAVECONF': 0x03,
                 'IHOLD_IRUN': 0x10,
                 'TPOWERDOWN': 0x11,
-                'VACTUAL': 0x22,
-                'MSCNT': 0x6A,
                 'CHOPCONF': 0x6C,
                 'PWMCONF': 0x70
             }

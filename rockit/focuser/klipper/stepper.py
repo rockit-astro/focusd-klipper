@@ -17,9 +17,14 @@
 """Logic to control a stepper motor using the Klipper MCU API"""
 
 import math
+import sys
 from .constants import StepperStatus
 
-HOMING_START_DELAY = 0.1
+sys.path.append('/home/ops/src/klipper/klippy')
+import chelper
+
+
+MOVE_START_DELAY = 0.1
 ENDSTOP_SAMPLE_TIME = .000015
 ENDSTOP_SAMPLE_COUNT = 4
 
@@ -40,6 +45,21 @@ def parse_pin(value):
     return pullup, invert, value
 
 
+def calc_move_time(dist, speed, accel):
+    axis_r = 1.
+    if dist < 0.:
+        axis_r = -1.
+        dist = -dist
+    if not accel or not dist:
+        return axis_r, 0., dist / speed, speed
+    max_cruise_v2 = dist * accel
+    if max_cruise_v2 < speed ** 2:
+        speed = math.sqrt(max_cruise_v2)
+    accel_t = speed / accel
+    accel_decel_d = accel_t * speed
+    cruise_t = (dist - accel_decel_d) / speed
+    return axis_r, accel_t, cruise_t, speed
+
 def build_command(command, **kwargs):
     return command + ' ' + ' '.join(f'{k}={v}' for k, v in kwargs.items())
 
@@ -58,6 +78,19 @@ class Stepper:
         self._pos_steps_count = 0
         self._trigger_status = TRIGGER_ACTIVE
         self._trigger_status_count = 0
+
+        ffi_main, ffi_lib = chelper.get_ffi()
+
+
+        self._stepqueue = ffi_main.gc(ffi_lib.stepcompress_alloc(self._stepper_oid), ffi_lib.stepcompress_free)
+        ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, False)
+
+        self._trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
+
+        sk = ffi_main.gc(getattr(ffi_lib, 'cartesian_stepper_alloc')(b'x'), ffi_lib.free)
+        ffi_lib.itersolve_set_stepcompress(sk, self._stepqueue, 1. / self._steps_per_distance)
+        ffi_lib.itersolve_set_trapq(sk, self._trapq)
+        self._stepper_kinematics = sk
 
         self._uart = None
         if 'tmc_uart' in self._config:
@@ -103,6 +136,14 @@ class Stepper:
 
     def configure(self):
         self.status = StepperStatus.NotHomed
+        msgparser = self._mcu.serial.get_msgparser()
+        step_cmd_tag = msgparser.lookup_msgid('queue_step oid=%c interval=%u count=%hu add=%hi') & 0xffffffff
+        dir_cmd_tag = msgparser.lookup_msgid('set_next_step_dir oid=%c dir=%c') & 0xffffffff
+        max_error_ticks = self._mcu.clocksync.print_time_to_clock(0.000025)
+        ffi_main, ffi_lib = chelper.get_ffi()
+
+        ffi_lib.stepcompress_fill(self._stepqueue, max_error_ticks, step_cmd_tag, dir_cmd_tag)
+
         if self._uart is not None:
             addr = self._config['tmc_uart']['address']
 
@@ -133,59 +174,39 @@ class Stepper:
             iholdirun |= irun << 8
             self._uart.write_register(addr, 'IHOLD_IRUN', iholdirun)
 
-    def calculate_move(self, distance, max_speed, accel):
-        """Return one or more tuples of step interval and step count"""
-        # Break the motion into three phases:
-        # 1. Acceleration from rest either to the requested speed,
-        #    or until 1/4 of the total distance has been travelled
-        # 2. Constant velocity
-        # 3. Deceleration to rest at the requested distance
-        total_steps = int(distance * self._steps_per_distance + 0.5)
-
-        # Reduce speed so that the coast phase always covers at least half of the total distance
-        coast_speed = min(max_speed, math.sqrt(0.5 * distance * accel))
-        coast_interval = int(self._mcu.clocksync.mcu_freq / (coast_speed * self._steps_per_distance))
-
-        acceleration_time = coast_speed / accel
-        acceleration_distance = 0.5 * accel * acceleration_time ** 2
-        acceleration_steps = int(acceleration_distance * self._steps_per_distance + 0.5)
-        coast_steps = total_steps - 2 * acceleration_steps
-        coast_ticks = coast_steps * coast_interval
-
-        acceleration_add = -int(2 * coast_interval / acceleration_steps)
-        acceleration_interval = coast_interval - acceleration_steps * acceleration_add
-
-        acceleration_ticks = deceleration_ticks = 0
-        for i in range(acceleration_steps):
-            acceleration_ticks += acceleration_interval + i * acceleration_add
-            deceleration_ticks += coast_interval - i * acceleration_add
-
-        yield acceleration_steps, acceleration_interval, acceleration_add, acceleration_ticks
-        yield coast_steps, coast_interval, 0, coast_ticks
-        yield acceleration_steps, coast_interval, -acceleration_add, deceleration_ticks
-
     def _move(self, distance, speed, acceleration, check_endstop):
-        start_time = self._mcu.clocksync.estimated_print_time(self._mcu.serial.reactor.monotonic()) + HOMING_START_DELAY
+        if distance == 0:
+            return
+
+        ffi_main, ffi_lib = chelper.get_ffi()
+
+        msgparser = self._mcu.serial.get_msgparser()
+        trsync_start_cmd_tag = msgparser.lookup_msgid('trsync_start oid=%c report_clock=%u report_ticks=%u expire_reason=%c') & 0xffffffff
+        trsync_set_timeout_cmd_tag = msgparser.lookup_msgid('trsync_set_timeout oid=%c clock=%u') & 0xffffffff
+        stepper_stop_cmd_tag = msgparser.lookup_msgid('stepper_stop_on_trigger oid=%c trsync_oid=%c') & 0xffffffff
+        endstop_home_cmd_tag = msgparser.lookup_msgid('endstop_home oid=%c clock=%u sample_ticks=%u sample_count=%c rest_ticks=%u pin_value=%c trsync_oid=%c trigger_reason=%c') & 0xffffffff
+        reset_cmd_tag = msgparser.lookup_msgid('reset_step_clock oid=%c clock=%u') & 0xffffffff
+
+        start_time = self._mcu.clocksync.estimated_print_time(self._mcu.serial.reactor.monotonic()) + MOVE_START_DELAY
         start_clock = self._mcu.clocksync.print_time_to_clock(start_time)
-        step_dir = 1 if distance * speed > 0 else 0
+        #ffi_lib.stepcompress_queue_msg(self._stepqueue, (reset_cmd_tag, self._stepper_oid, start_clock), 3)
 
         self._trigger_status = TRIGGER_ACTIVE
-        self._mcu.serial.send(build_command('set_next_step_dir', oid=self._stepper_oid, dir=step_dir))
-        self._mcu.serial.send(build_command('reset_step_clock', oid=self._stepper_oid, clock=start_clock))
 
-        end_clock = start_clock
-        for count, interval, add, ticks in self.calculate_move(abs(distance), speed, acceleration):
-            while count > 0:
-                # queue_step is limited to 16 bit counts
-                c = min(65535, count)
-                self._mcu.serial.send(build_command('queue_step', oid=self._stepper_oid, interval=interval, count=c, add=add))
-                count -= c
-                interval += c * add
-            end_clock += ticks
+        axis_r, accel_t, cruise_t, cruise_v = calc_move_time(distance, speed, acceleration)
+        ffi_lib.trapq_append(self._trapq, start_time,
+                          accel_t, cruise_t, accel_t,
+                          self._pos_steps, 0., 0., axis_r, 0., 0.,
+                          0., cruise_v, acceleration)
+        end_time = start_time + accel_t + cruise_t + accel_t
+        end_clock = self._mcu.clocksync.print_time_to_clock(end_time)
 
-        self._mcu.serial.send(build_command('trsync_start', oid=self._trigger_oid, report_clock=0, report_ticks=0, expire_reason=TRIGGER_TIMEOUT))
-        self._mcu.serial.send(build_command('trsync_set_timeout', oid=self._trigger_oid, clock=end_clock))
-        self._mcu.serial.send(build_command('stepper_stop_on_trigger', oid=self._stepper_oid, trsync_oid=self._trigger_oid))
+
+        ffi_lib.stepcompress_queue_msg(self._stepqueue, (trsync_start_cmd_tag, self._trigger_oid, 0, 0, TRIGGER_TIMEOUT), 5)
+        ffi_lib.stepcompress_queue_msg(self._stepqueue, (trsync_set_timeout_cmd_tag, self._trigger_oid, end_clock), 3)
+        ffi_lib.stepcompress_queue_msg(self._stepqueue, (stepper_stop_cmd_tag, self._stepper_oid, self._trigger_oid), 3)
+        ffi_lib.itersolve_generate_steps(self._stepper_kinematics, end_time)
+        ffi_lib.trapq_finalize_moves(self._trapq, end_time + 99999.9, end_time + 99999.9)
 
         if check_endstop:
             sample_ticks = self._mcu.clocksync.print_time_to_clock(ENDSTOP_SAMPLE_TIME)
@@ -193,9 +214,7 @@ class Stepper:
 
             _, endstop_inverted, _ = parse_pin(self._config['endstop_pin'])
             endstop_value = 0 if endstop_inverted else 1
-            self._mcu.serial.send(build_command('endstop_home', oid=self._endstop_oid, clock=start_clock, sample_ticks=sample_ticks,
-                                            sample_count=ENDSTOP_SAMPLE_COUNT, rest_ticks=rest_ticks, pin_value=endstop_value,
-                                            trsync_oid=self._trigger_oid, trigger_reason=TRIGGER_AT_LIMIT))
+            ffi_lib.stepcompress_queue_msg(self._stepqueue, (endstop_home_cmd_tag, self._endstop_oid, start_clock, sample_ticks, ENDSTOP_SAMPLE_COUNT, rest_ticks, endstop_value, self._trigger_oid, TRIGGER_AT_LIMIT), 9)
 
         query_position_command = build_command('stepper_get_position', oid=self._stepper_oid)
         while self._trigger_status == TRIGGER_ACTIVE:
@@ -205,11 +224,16 @@ class Stepper:
         if self._trigger_status == TRIGGER_TIMEOUT:
             print('Homing timed out')
         else:
-            # Ensure position is synchronised
-            count = self._pos_steps_count
-            self._mcu.serial.send(query_position_command)
-            while self._pos_steps_count == count:
-                self._mcu.serial.reactor.pause(self._mcu.serial.reactor.monotonic() + 0.1)
+            pass
+        print('here')
+        if check_endstop:
+            ffi_lib.stepcompress_reset(self._stepqueue, 0)
+
+        # Ensure position is synchronised
+        count = self._pos_steps_count
+        self._mcu.serial.send(query_position_command)
+        while self._pos_steps_count == count:
+            self._mcu.serial.reactor.pause(self._mcu.serial.reactor.monotonic() + 0.1)
 
         #disable_time = self._mcu.clocksync.estimated_print_time(self._mcu.serial.reactor.monotonic()) + 0.1
         #disable_clock = self._mcu.clocksync.print_time_to_clock(disable_time)
@@ -245,8 +269,3 @@ class Stepper:
         def inner(_):
             self._mcu.serial.send(f'trsync_trigger oid={self._trigger_oid} reason={TRIGGER_MANUAL}')
         self._mcu.serial.reactor.register_async_callback(inner)
-
-    def set_speed(self, speed):
-        if self._uart is not None:
-            addr = self._config['tmc_uart']['address']
-            self._uart.write_register(addr, 'VACTUAL', int(speed * self._steps_per_distance / 0.715))

@@ -157,18 +157,6 @@ class MCU:
 
         return SyncCallback(self, inner).run()
 
-    def stepper_track(self, stepper_names, speed):
-        if type(stepper_names) is str:
-            stepper_names = [stepper_names]
-
-        def inner():
-            for name in stepper_names:
-                s = self.steppers.get(name, None)
-                if s is not None:
-                    s.set_speed(speed)
-
-        return SyncCallback(self, inner).run()
-
     def stepper_stop(self, stepper_names):
         if type(stepper_names) is str:
             stepper_names = [stepper_names]

@@ -11,7 +11,7 @@
   "homing_fine_step": 0.5,
   "homing_fine_speed": 0.1,
   "mcu": {
-    "serial_port": "/dev/serial/by-id/usb-Klipper_rp2040_454741505A8A24EA-if00",
+    "serial_port": "/dev/serial/by-id/usb-Klipper_rp2040_454741505C0B99DA-if00",
     "serial_baud": 250000,
     "serial_timeout": 60,
     "tmc_uarts": {
@@ -32,7 +32,7 @@
         "position_min": 0,
         "position_max": 50,
         "speed": 2.5,
-        "acceleration": 0.5,
+        "acceleration": 0.25,
         "homing_backoff": 1,
         "tmc_uart": {
           "uart": "shared",
@@ -51,7 +51,7 @@
         "position_min": 0,
         "position_max": 50,
         "speed": 2.5,
-        "acceleration": 0.5,
+        "acceleration": 0.25,
         "homing_backoff": 1,
         "tmc_uart": {
           "uart": "shared",
@@ -70,7 +70,7 @@
         "position_min": 0,
         "position_max": 50,
         "speed": 2.5,
-        "acceleration": 0.5,
+        "acceleration": 0.25,
         "homing_backoff": 1,
         "tmc_uart": {
           "uart": "shared",
