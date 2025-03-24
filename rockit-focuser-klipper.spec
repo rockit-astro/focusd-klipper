@@ -20,6 +20,8 @@ mkdir -p %{buildroot}%{_sysconfdir}/focusd/
 %{__install} %{_sourcedir}/klipper_focusd@.service %{buildroot}%{_unitdir}
 %{__install} %{_sourcedir}/completion/focus %{buildroot}/etc/bash_completion.d
 
+%{__install} %{_sourcedir}/pdt.json %{buildroot}%{_sysconfdir}/focusd
+
 %package server
 Summary:  Focuser control server.
 Group:    Unspecified
@@ -42,5 +44,15 @@ Requires: python3-rockit-focuser-klipper
 %defattr(0755,root,root,-)
 %{_bindir}/focus
 /etc/bash_completion.d/focus
+
+
+%package data-pdt
+Summary: Data pipeline configuration for the PDT.
+Group:   Unspecified
+%description data-pdt
+
+%files data-pdt
+%defattr(0644,root,root,-)
+%{_sysconfdir}/focusd/pdt.json
 
 %changelog
