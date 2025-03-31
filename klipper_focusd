@@ -134,12 +134,16 @@ class FocuserDaemon:
             data['channels'] = {}
             for k, c in self._channels.items():
                 status = c.stepper.status
-                data['channels'][k] = {
+                channel = {
                     'status': status,
                     'status_label': StepperStatus.label(status, formatting=False),
-                    'pos': c.stepper.position,
-                    'set_pos': c.set_pos
                 }
+
+                if status >= StepperStatus.Idle:
+                    channel['pos'] = c.stepper.position
+                    channel['set_pos'] = c.set_pos
+
+                data['channels'][k] = channel
 
         return data
 
