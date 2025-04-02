@@ -71,7 +71,20 @@ CONFIG_SCHEMA = {
                     'type': 'number',
                     'minimum': 1
                 }
-            }
+            },
+            'additionalProperties': False
+        },
+        'neopixel': {
+            'type': 'object',
+            'required': ['pin', 'count'],
+            'properties': {
+                'pin': {'type': 'string'},
+                'count': {
+                    'type': 'integer',
+                    'minimum': 1
+                }
+            },
+            'additionalProperties': False
         },
         'interfaces': {
             'type': 'object',
@@ -196,6 +209,7 @@ class Config:
         self.move_timeout = float(config_json['move_timeout'])
         self.home_timeout = float(config_json['home_timeout'])
         self.controller_fan = config_json.get('controller_fan', None)
+        self.neopixel = config_json.get('neopixel', None)
         self.interfaces = config_json.get('interfaces', {})
         self.probes = config_json.get('probes', {})
         self.steppers = config_json['steppers']

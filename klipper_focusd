@@ -19,13 +19,14 @@
 import argparse
 from datetime import datetime
 import json
+import re
 import threading
 import traceback
 import sys
 import Pyro4
 from rockit.common import log, TryLock
 from rockit.common.helpers import pyro_client_matches
-from rockit.klippermcu import DS2484, MCU, OutputPin, Stepper, StepperStatus, TMCUART
+from rockit.klippermcu import DS2484, MCU, NeoPixel, OutputPin, Stepper, StepperStatus, TMCUART
 from rockit.klippermcu import DS18B20Probe, RP2040Probe, ThermistorProbe
 from rockit.focuser.klipper import CommandStatus, Config, FocuserStatus
 
@@ -93,6 +94,11 @@ class FocuserDaemon:
             self._controller_fan = OutputPin(self._mcu, config.controller_fan['pin'])
             threading.Thread(target=self._fan_thread).start()
 
+        self._neopixel = self._color_regex = None
+        if config.neopixel:
+            self._color_regex = re.compile('^([0-9A-Fa-f]{6})$')
+            self._neopixel = NeoPixel(self._mcu, config.neopixel['pin'], config.neopixel['count'])
+
     def _fan_thread(self):
         cond = threading.Condition()
         active_states = [StepperStatus.Moving, StepperStatus.Homing, StepperStatus.Tracking]
@@ -130,6 +136,9 @@ class FocuserDaemon:
             data['temperature'] = {}
             for k, t in self._temperatures.items():
                 data['temperature'][k] = t.temperature
+
+            if self._neopixel:
+                data['neopixel'] = self._neopixel.color
 
             data['channels'] = {}
             for k, c in self._channels.items():
@@ -301,6 +310,30 @@ class FocuserDaemon:
                 c.stepper.stop()
 
         return CommandStatus.Succeeded
+
+    @Pyro4.expose
+    def set_light(self, color):
+        """Change the color of an attached NeoPixel light strip"""
+        if not pyro_client_matches(self._config.control_ips):
+            return CommandStatus.InvalidControlIP
+
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if not self._mcu.connected:
+                return CommandStatus.NotConnected
+
+            if not self._neopixel:
+                return CommandStatus.NoLights
+
+            if not self._color_regex.match(color):
+                return CommandStatus.InvalidLightColor
+
+            if not self._neopixel.set_color(color):
+                return CommandStatus.Failed
+
+            return CommandStatus.Succeeded
 
     @Pyro4.expose
     def shutdown(self):
