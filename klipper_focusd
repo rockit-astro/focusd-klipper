@@ -33,16 +33,9 @@ from rockit.focuser.klipper import CommandStatus, Config, FocuserStatus
 class Channel:
     def __init__(self, mcu, interfaces, config):
         interface = config.pop('interface', None)
+        uart = None
         if interface is not None:
             uart = interfaces[interface]
-        else:
-            uart = None
-            config['uart_address'] = 0
-            config['uart_microsteps'] = 0
-            config['uart_run_current'] = 0
-
-        if 'endstop_pin' not in config:
-            config['endstop_pin'] = None
 
         self.stepper = Stepper(mcu, uart, **config)
         self.command_lock = threading.Lock()
