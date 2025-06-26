@@ -18,7 +18,7 @@
 
 import json
 from rockit.common import daemons, IP, validation
-from rockit.klippermcu.schema import gpio_schema, interfaces_schema, neopixel_schema, stepper_schema
+from rockit.klippermcu.schema import gpio_schema, interfaces_schema, stepper_schema
 
 CONFIG_SCHEMA = {
     'type': 'object',
@@ -64,7 +64,6 @@ CONFIG_SCHEMA = {
             'minimum': 0
         },
         'controller_fan': gpio_schema(),
-        'neopixel': neopixel_schema(),
         'interfaces': interfaces_schema(tmc2209=True, ds2484=True),
         'probes': {
             'type': 'object',
@@ -133,7 +132,6 @@ class Config:
         self.move_timeout = float(config_json['move_timeout'])
         self.home_timeout = float(config_json['home_timeout'])
         self.controller_fan = config_json.get('controller_fan', None)
-        self.neopixel = config_json.get('neopixel', None)
         self.interfaces = config_json.get('interfaces', {})
         self.probes = config_json.get('probes', {})
         self.steppers = config_json['steppers']

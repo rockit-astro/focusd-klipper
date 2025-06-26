@@ -64,14 +64,6 @@ def print_status(config, _):
 
     label = f'Focuser is {FocuserStatus.label(data["status"], True)}'
     print(label)
-    if 'neopixel' in data:
-        if data["neopixel"] == '000000':
-            label = f'[bold]OFF[/bold]'
-        else:
-            label = f'[bold]ON[/bold] ([#{data["neopixel"]}][bold]#{data["neopixel"].upper()}[/bold][/#{data["neopixel"]}])'
-
-        print('Light is ' + label)
-
     if 'channels' in data:
         print('Channels:')
         for channel_id, channel in data['channels'].items():
@@ -138,22 +130,6 @@ def home(config, *_):
             return focusd.stop()
 
 
-def light(config, args):
-    """Toggle lights or set color"""
-    if len(args) == 1:
-        color = args[0]
-        if args[0] == 'on':
-            color = 'FFFFFF'
-        elif args[0] == 'off':
-            color = '000000'
-
-        with config.daemon.connect() as focusd:
-            return focusd.set_light(color)
-
-    print(f'usage: {SCRIPT_NAME} light (on|off|RRGGBB)')
-    return -1
-
-
 def shutdown(config, *_):
     """Disconnect from the focus controller"""
     with config.daemon.connect() as focusd:
@@ -183,7 +159,6 @@ if __name__ == '__main__':
         'status': print_status,
         'init': initialize,
         'home': home,
-        'light': light,
         'kill': shutdown
     }
 

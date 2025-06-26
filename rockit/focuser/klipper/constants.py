@@ -31,9 +31,6 @@ class CommandStatus:
     NotConnected = 7
     NotDisconnected = 8
 
-    NoLights = 9
-    InvalidLightColor = 10
-
     _messages = {
         # General error codes
         1: 'error: command failed',
@@ -44,8 +41,6 @@ class CommandStatus:
         6: 'error: requested position outside channel range',
         7: 'error: controller is not connected',
         8: 'error: controller is already connected',
-        9: 'error: lights are not available',
-        10: 'error: invalid light color',
 
         -100: 'error: terminated by user',
         -101: 'error: unable to communicate with focus daemon',

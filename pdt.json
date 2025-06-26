@@ -12,10 +12,6 @@
     "pin": "gpio17",
     "idle_timeout": 30
   },
-  "neopixel": {
-    "pin": "gpio24",
-    "count": 60
-  },
   "interfaces": {
     "tmc_uart": {
       "type": "tmc2209",
