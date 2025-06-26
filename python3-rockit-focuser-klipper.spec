@@ -1,6 +1,6 @@
 Name:           python3-rockit-focuser-klipper
 Version:        %{_version}
-Release:        1
+Release:        1%{dist}
 License:        GPL3
 Summary:        Common backend code for Klipper focuser daemon
 Url:            https://github.com/rockit-astro/focusd-klipper

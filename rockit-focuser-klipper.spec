@@ -1,6 +1,6 @@
 Name:      rockit-focuser-klipper
 Version:   %{_version}
-Release:   1
+Release:   1%{dist}
 Summary:   Daemon for controlling a multi-channel focus controller via klipper and Pyro
 Url:       https://github.com/rockit-astro/focusd-klipper
 License:   GPL-3.0
