@@ -18,6 +18,7 @@
 
 import json
 from rockit.common import daemons, IP, validation
+from rockit.klippermcu.schema import gpio_schema, interfaces_schema, neopixel_schema, stepper_schema
 
 CONFIG_SCHEMA = {
     'type': 'object',
@@ -62,54 +63,9 @@ CONFIG_SCHEMA = {
             'type': 'number',
             'minimum': 0
         },
-        'controller_fan': {
-            'type': 'object',
-            'required': ['pin', 'idle_timeout'],
-            'properties': {
-                'pin': {'type': 'string'},
-                'idle_timeout': {
-                    'type': 'number',
-                    'minimum': 1
-                }
-            },
-            'additionalProperties': False
-        },
-        'neopixel': {
-            'type': 'object',
-            'required': ['pin', 'count'],
-            'properties': {
-                'pin': {'type': 'string'},
-                'count': {
-                    'type': 'integer',
-                    'minimum': 1
-                }
-            },
-            'additionalProperties': False
-        },
-        'interfaces': {
-            'type': 'object',
-            'additionalProperties': {
-                'type': 'object',
-                'oneOf': [
-                    {
-                        'properties': {
-                            'type': {'type': 'string', 'enum': ['tmc2209']},
-                            'uart_pin': {'type': 'string'},
-                            'tx_pin': {'type': 'string'},
-                        },
-                        'required': ['uart_pin'],
-                        'additionalProperties': False
-                    },
-                    {
-                        'properties': {
-                            'type': {'enum': ['DS2484']},
-                            'i2c_bus': {'type': 'string'},
-                        },
-                        'additionalProperties': False
-                    }
-                ]
-            }
-        },
+        'controller_fan': gpio_schema(),
+        'neopixel': neopixel_schema(),
+        'interfaces': interfaces_schema(tmc2209=True, ds2484=True),
         'probes': {
             'type': 'object',
             'additionalProperties': {
@@ -149,39 +105,7 @@ CONFIG_SCHEMA = {
         },
         'steppers': {
             'type': 'object',
-            'additionalProperties': {
-                'type': 'object',
-                'additionalProperties': False,
-                # endstop_pin and uart* are optional
-                'required': ['step_pin', 'dir_pin', 'enable_pin', 'rotation_microsteps', 'rotation_distance',
-                             'position_min', 'position_max', 'speed', 'acceleration', 'homing_backoff',
-                             'tracking_cadence', 'tracking_commit_buffer'],
-                'properties': {
-                    'step_pin': {'type': 'string'},
-                    'dir_pin': {'type': 'string'},
-                    'enable_pin': {'type': 'string'},
-                    'endstop_pin': {'type': 'string'},
-                    'rotation_microsteps': {'type': 'integer'},
-                    'rotation_distance': {'type': 'number'},
-                    'position_min': {'type': 'number'},
-                    'position_max': {'type': 'number'},
-                    'speed': {'type': 'number'},
-                    'acceleration': {'type': 'number'},
-                    'homing_backoff': {'type': 'number'},
-                    'tracking_cadence': {'type': 'number'},
-                    'tracking_commit_buffer': {'type': 'number'},
-                    'interface': {'type': 'string'},
-                    'uart_address': {'type': 'integer', 'enum': [0, 1, 2, 3]},
-                    'uart_microsteps': {'type': 'integer', 'enum': [1, 2, 4, 8, 16, 32, 64, 128, 256]},
-                    'uart_run_current': {'type': 'number', 'minimum': 0}
-                },
-                'dependencies': {
-                    'uart_address': ['interface'],
-                    'uart_microsteps': ['interface'],
-                    'uart_run_current': ['interface'],
-                    'interface': ['uart_address', 'uart_microsteps', 'uart_run_current']
-                }
-            }
+            'additionalProperties': stepper_schema()
         }
     }
 }
