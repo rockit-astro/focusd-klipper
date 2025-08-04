@@ -1,8 +1,8 @@
 {
-  "daemon": "localhost_test",
-  "log_name": "focusd@portable",
-  "control_machines": ["LocalHost"],
-  "state_path": "/var/tmp/focuser-ebb.json",
+  "daemon": "halfmetre_focuser",
+  "log_name": "focusd@halfmetre",
+  "control_machines": ["HalfMetreTCS"],
+  "state_path": "/var/tmp/focuser-halfmetre.json",
   "serial_port": "/dev/serial/by-id/usb-Klipper_stm32g0b1xx_340008000B50425539393020-if00",
   "serial_baud": 250000,
   "connect_timeout": 10,
@@ -19,10 +19,18 @@
     }
   },
   "probes": {
-    "1": {
-      "label": "Bridge",
+    "primary_mirror": {
+      "label": "Primary Mirror",
       "cadence": 5,
       "type": "DS18B20",
+      "address": "28EFE61E0B0000B9",
+      "interface": "ds2484"
+    },
+    "secondary_mirror": {
+      "label": "Secondary Mirror",
+      "cadence": 5,
+      "type": "DS18B20",
+      "address": "28FBE91E0B000051",
       "interface": "ds2484"
     }
   },
@@ -31,10 +39,9 @@
       "step_pin": "PD0",
       "dir_pin": "!PD1",
       "enable_pin": "!PD2",
-      "endstop_pin": "^PC15",
       "rotation_microsteps": 3200,
-      "rotation_distance": 1,
-      "position_min": 0,
+      "rotation_distance": 0.635,
+      "position_min": -50,
       "position_max": 50,
       "speed": 2.5,
       "acceleration": 0.5,

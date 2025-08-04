@@ -85,6 +85,7 @@ CONFIG_SCHEMA = {
                             'label': {'type': 'string'},
                             'cadence': {'type': 'number'},
                             'type': {'enum': ['DS18B20']},
+                            'address': {'type': 'string'},
                             'interface': {'type': 'string'}
                         },
                         'required': ['label', 'cadence', 'type', 'interface'],

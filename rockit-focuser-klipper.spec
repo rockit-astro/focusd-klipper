@@ -21,6 +21,7 @@ mkdir -p %{buildroot}%{_sysconfdir}/focusd/
 %{__install} %{_sourcedir}/completion/focus %{buildroot}/etc/bash_completion.d
 
 %{__install} %{_sourcedir}/pdt.json %{buildroot}%{_sysconfdir}/focusd
+%{__install} %{_sourcedir}/halfmetre.json %{buildroot}%{_sysconfdir}/focusd
 
 %package server
 Summary:  Focuser control server.
@@ -45,6 +46,14 @@ Requires: python3-rockit-focuser-klipper
 %{_bindir}/focus
 /etc/bash_completion.d/focus
 
+%package data-halfmetre
+Summary: Data pipeline configuration for the half metre telescope.
+Group:   Unspecified
+%description data-halfmetre
+
+%files data-halfmetre
+%defattr(0644,root,root,-)
+%{_sysconfdir}/focusd/halfmetre.json
 
 %package data-pdt
 Summary: Data pipeline configuration for the PDT.
