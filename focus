@@ -62,18 +62,29 @@ def print_status(config, _):
         data = focusd.report_status()
         temperature_labels = focusd.temperature_labels()
 
-    label = f'Focuser is {FocuserStatus.label(data["status"], True)}'
-    print(label)
-    if 'channels' in data:
-        print('Channels:')
-        for channel_id, channel in data['channels'].items():
-            label = f'   [b]{channel_id}[/b]: ' + StepperStatus.label(channel['status'], True)
-            if channel['status'] >= StepperStatus.Idle:
-                label += f' ([b]{channel["pos"]:.2f} mm'
-                if channel['status'] == StepperStatus.Moving:
-                    label += f' moving to {channel["set_pos"]:.2f} mm'
-                label += '[/b])'
-            print(label)
+    if 'channels' in data and len(data['channels']) == 1:
+        channel = next(iter(data['channels'].values()))
+        label = f'Focuser is {StepperStatus.label(channel["status"], True)}'
+        if channel['status'] >= StepperStatus.Idle:
+            label += f' ([b]{channel["pos"]:.2f} mm'
+            if channel['status'] == StepperStatus.Moving:
+                label += f' moving to {channel["set_pos"]:.2f} mm'
+            label += '[/b])'
+        print(label)
+    else:
+        label = f'Focuser is {FocuserStatus.label(data["status"], True)}'
+        print(label)
+
+        if 'channels' in data:
+            print('Channels:')
+            for channel_id, channel in data['channels'].items():
+                label = f'   [b]{channel_id}[/b]: ' + StepperStatus.label(channel['status'], True)
+                if channel['status'] >= StepperStatus.Idle:
+                    label += f' ([b]{channel["pos"]:.2f} mm'
+                    if channel['status'] == StepperStatus.Moving:
+                        label += f' moving to {channel["set_pos"]:.2f} mm'
+                    label += '[/b])'
+                print(label)
 
     if 'temperature' in data and len(data['temperature']):
         print('Temperature Probes:')
@@ -90,26 +101,44 @@ def print_status(config, _):
 
 def set_position(config, args):
     """Request a focuser channel to move a specific position"""
-    if len(args) == 2:
+    if len(config.steppers) == 1:
+        if len(args) == 1:
+            channel = next(iter(config.steppers.keys()))
+            position = float(args[0])
+        else:
+            print(f'usage: {SCRIPT_NAME} set <position>')
+            return -1
+    elif len(args) == 2:
         channel = args[0]
         position = float(args[1])
-        try:
-            with config.daemon.connect(timeout=config.move_timeout) as focusd:
-                return focusd.set_channel(channel, position)
-        except KeyboardInterrupt:
-            # ctrl-c terminates the running command
-            with config.daemon.connect() as focusd:
-                return focusd.stop(channel)
-    print(f'usage: {SCRIPT_NAME} set <channel> <position>')
-    return -1
+    else:
+        print(f'usage: {SCRIPT_NAME} set ({"|".join(config.steppers.keys())}) <position>')
+        return -1
+
+    try:
+        with config.daemon.connect(timeout=config.move_timeout) as focusd:
+            return focusd.set_channel(channel, position)
+    except KeyboardInterrupt:
+        # ctrl-c terminates the running command
+        with config.daemon.connect() as focusd:
+            return focusd.stop(channel)
 
 
 def stop(config, args):
     """Stop a focuser channel"""
+    if len(config.steppers) == 1:
+        if len(args) == 0:
+            with config.daemon.connect() as focusd:
+                return focusd.stop()
+        else:
+            print(f'usage: {SCRIPT_NAME} stop')
+            return -1
+
     if len(args) == 1:
         with config.daemon.connect() as focusd:
             return focusd.stop(args[0])
-    print(f'usage: {SCRIPT_NAME} stop <channel>')
+
+    print(f'usage: {SCRIPT_NAME} stop (' + '|'.join(config.steppers.keys()) + ')')
     return -1
 
 
