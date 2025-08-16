@@ -17,7 +17,7 @@
 
 """Daemon for controlling a multi-channel focus controller via klipper and Pyro"""
 import argparse
-from datetime import datetime
+import datetime
 import json
 import threading
 import traceback
@@ -114,7 +114,7 @@ class FocuserDaemon:
             s = FocuserStatus.Initializing if self._is_homing else FocuserStatus.Connected
 
         data = {
-            'date': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
             'status': s,
             'status_label': FocuserStatus.label(s, formatting=False),
         }
